@@ -46,13 +46,14 @@ import json
 import numpy as np
 import pandas as pd
 from pyquaternion import Quaternion
+from tqdm import tqdm
 
 
 def parse_args():
-    parser = argparse.ArgumentParser("Convert annotations from Kaggle to Nuscences.")
+    parser = argparse.ArgumentParser("Convert annotations from Kaggle csv to Nuscences json.")
     arg = parser.add_argument
-    arg("-i", "--input_file", type=str, help="Path to the input file.", required=True)
-    arg("-o", "--output_file", type=str, help="Path to the output file.", required=True)
+    arg("-i", "--input_file", type=str, help="Path to the input csv file.", required=True)
+    arg("-o", "--output_file", type=str, help="Path to the output json file.", required=True)
     arg("-t", "--type", type=str, help="Predictions or ground truth.", required=True, choices=["pred", "gt"])
 
     return parser.parse_args()
@@ -61,6 +62,7 @@ def parse_args():
 def main():
     args = parse_args()
     df = pd.read_csv(args.input_file)
+    df["PredictionString"] = df["PredictionString"].fillna("")
 
     if args.type == "pred":
         num_parameters_in_bbox = 9
@@ -75,8 +77,8 @@ def main():
 
     temp = []
 
-    for i in df.index:
-        bbox_string = df.loc[i, "PredictionString"].strip().split(" ")
+    for i in tqdm(df.index):
+        bbox_string = df.loc[i, "PredictionString"].strip().split()
         new_shape = (int(len(bbox_string) / num_parameters_in_bbox), num_parameters_in_bbox)
 
         boxes = np.array(bbox_string).reshape(new_shape)
@@ -93,6 +95,7 @@ def main():
     joined_df["length"] = joined_df["length"].astype(float)
     joined_df["height"] = joined_df["height"].astype(float)
     joined_df["yaw"] = joined_df["yaw"].astype(float)
+
     if args.type == "pred":
         joined_df["score"] = joined_df["score"].astype(float)
 
@@ -103,7 +106,7 @@ def main():
     joined_df = joined_df[target_columns]
 
     with open(args.output_file, "w") as f:
-        json.dump(joined_df.to_dict("records"), f, indent=4)
+        json.dump(joined_df.to_dict("records"), f, indent=2)
 
 
 if __name__ == "__main__":

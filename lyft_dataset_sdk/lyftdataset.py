@@ -5,46 +5,53 @@
 
 import json
 import math
-import os
-import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 import sklearn.metrics
-from PIL import Image
 from matplotlib.axes import Axes
+from PIL import Image
 from pyquaternion import Quaternion
 from tqdm import tqdm
 
-from lyft_dataset_sdk.utils.data_classes import Box, LidarPointCloud, RadarPointCloud  # NOQA
-from lyft_dataset_sdk.utils.geometry_utils import BoxVisibility, box_in_image, view_points  # NOQA
+from lyft_dataset_sdk.Box import Box
+from lyft_dataset_sdk.data_classes import LidarPointCloud
+from lyft_dataset_sdk.geometry_utils import BoxVisibility, box_in_image, view_points
 from lyft_dataset_sdk.utils.map_mask import MapMask
-
-PYTHON_VERSION = sys.version_info[0]
-
-if not PYTHON_VERSION == 3:
-    raise ValueError("LyftDataset sdk only supports Python version 3.")
 
 
 class LyftDataset:
     """Database class for Lyft Dataset to help query and retrieve information from the database."""
 
-    def __init__(self, data_path: str, json_path: str, verbose: bool = True, map_resolution: float = 0.1):
+    def __init__(
+        self,
+        image_path: str,
+        lidar_path: str,
+        json_path: str,
+        map_path: Optional[str] = None,
+        verbose: bool = True,
+        map_resolution: float = 0.1,
+    ):
         """Loads database and creates reverse indexes and shortcuts.
 
         Args:
-            data_path: Path to the tables and data.
+            image_path: Path to the images
+            lidar_path: Path to lidar
             json_path: Path to the folder with json files
+            map_path: Path to the map file
             verbose: Whether to print status messages during load.
             map_resolution: Resolution of maps (meters).
         """
 
-        self.data_path = Path(data_path).expanduser().absolute()
+        self.image_path = Path(image_path).expanduser().absolute()
+        self.lidar_path = Path(lidar_path).expanduser().absolute()
+
         self.json_path = Path(json_path)
 
         self.table_names = [
@@ -80,21 +87,13 @@ class LyftDataset:
         self.sample_annotation = self.__load_table__("sample_annotation", verbose, missing_ok=True)
         self.map = self.__load_table__("map", verbose)
 
-        # Initialize map mask for each map record.
-        for map_record in self.map:
-            if (self.data_path / map_record["filename"]).is_file():
-                map_record["mask"] = MapMask(self.data_path / map_record["filename"], resolution=map_resolution)
-            elif (self.data_path / "train_maps" / "map_raster_palo_alto.png").is_file():
-                map_record["mask"] = MapMask(
-                    self.data_path / "train_maps" / "map_raster_palo_alto.png", resolution=map_resolution
-                )
-            else:
-                raise FileNotFoundError("Could not file map file.")
+        # if map_path is not None:
+        self.map_mask = MapMask(map_path, resolution=map_resolution)
 
         if verbose:
             for table in self.table_names:
                 print(f"{len(getattr(self, table))} {table},")
-            print("Done loading in {:.1f} seconds.\n======".format(time.time() - start_time))
+            print(f"Done loading in {time.time() - start_time:.1f} seconds.\n======")
 
         # Make reverse indexes for common lookups.
         self.__make_reverse_index__(verbose)
@@ -102,14 +101,14 @@ class LyftDataset:
         # Initialize LyftDatasetExplorer class
         self.explorer = LyftDatasetExplorer(self)
 
-    def __load_table__(self, table_name: str, verbose: bool = False, missing_ok: bool = False):
+    def __load_table__(self, table_name: str, verbose: bool = False, missing_ok: bool = False) -> Dict[Any, Any]:
         """Loads a table."""
         filepath = self.json_path / f"{table_name}.json"
 
         if not filepath.is_file() and missing_ok:
             if verbose:
                 print(f"JSON file {table_name}.json missing, using empty list")
-            return []
+            return {}
 
         with open(str(filepath)) as f:
             table = json.load(f)
@@ -128,7 +127,7 @@ class LyftDataset:
             print("Reverse indexing ...")
 
         # Store the mapping from token to table index for each table.
-        self._token2ind = dict()
+        self._token2ind: Dict = dict()
         for table in self.table_names:
             self._token2ind[table] = dict()
             for ind, member in enumerate(getattr(self, table)):
@@ -184,7 +183,8 @@ class LyftDataset:
 
         """
 
-        assert table_name in self.table_names, f"Table {table_name} not found"
+        if table_name not in self.table_names:
+            raise KeyError(f"Table {table_name} not found")
 
         return getattr(self, table_name)[self.getind(table_name, token)]
 
@@ -200,7 +200,7 @@ class LyftDataset:
         """
         return self._token2ind[table_name][token]
 
-    def field2token(self, table_name: str, field: str, query) -> List[str]:
+    def field2token(self, table_name: str, field: str, query: str) -> List[str]:
         """Query all records for a certain field value, and returns the tokens for the matching records.
 
         Runs in linear time.
@@ -219,24 +219,33 @@ class LyftDataset:
                 matches.append(member["token"])
         return matches
 
-    def get_sample_data_path(self, sample_data_token: str) -> Path:
+    def get_sample_data_path(self, sample_data_token: str, modality: str) -> Path:
         """Returns the path to a sample_data.
 
         Args:
             sample_data_token:
+            modality: 'lidar' or 'camera'
 
         Returns:
 
         """
 
         sd_record = self.get("sample_data", sample_data_token)
-        return self.data_path / sd_record["filename"]
+
+        if modality == "lidar":
+            data_path = self.lidar_path
+        elif modality == "camera":
+            data_path = self.image_path
+        else:
+            raise NotImplementedError()
+
+        return data_path / Path(sd_record["filename"]).name
 
     def get_sample_data(
         self,
         sample_data_token: str,
         box_vis_level: BoxVisibility = BoxVisibility.ANY,
-        selected_anntokens: List[str] = None,
+        selected_anntokens: Optional[List[str]] = None,
         flat_vehicle_coordinates: bool = False,
     ) -> Tuple[Path, List[Box], np.array]:
         """Returns the data path as well as all annotations related to that sample_data.
@@ -258,15 +267,16 @@ class LyftDataset:
         cs_record = self.get("calibrated_sensor", sd_record["calibrated_sensor_token"])
         sensor_record = self.get("sensor", cs_record["sensor_token"])
         pose_record = self.get("ego_pose", sd_record["ego_pose_token"])
+        modality = sensor_record["modality"]
 
-        data_path = self.get_sample_data_path(sample_data_token)
+        data_path = self.get_sample_data_path(sample_data_token, modality)
 
-        if sensor_record["modality"] == "camera":
+        cam_intrinsic: Optional[np.ndarray] = None
+        image_size: Optional[Tuple[int, int]] = None
+
+        if modality == "camera":
             cam_intrinsic = np.array(cs_record["camera_intrinsic"])
             image_size = (sd_record["width"], sd_record["height"])
-        else:
-            cam_intrinsic = None
-            image_size = None
 
         # Retrieve all sample annotations and map to sensor coordinate system.
         if selected_anntokens is not None:
@@ -294,8 +304,10 @@ class LyftDataset:
                 box.translate(-np.array(cs_record["translation"]))
                 box.rotate_around_origin(Quaternion(cs_record["rotation"]).inverse)
 
-            if sensor_record["modality"] == "camera" and not box_in_image(
-                box, cam_intrinsic, image_size, vis_level=box_vis_level
+            if (
+                sensor_record["modality"] == "camera"
+                and image_size is not None
+                and not box_in_image(box, cam_intrinsic, image_size, vis_level=box_vis_level)
             ):
                 continue
 
@@ -443,8 +455,8 @@ class LyftDataset:
         if time_diff > max_time_diff:
             # If time_diff is too big, don't return an estimate.
             return np.array([np.nan, np.nan, np.nan])
-        else:
-            return pos_diff / time_diff
+
+        return pos_diff / time_diff
 
     def list_categories(self) -> None:
         self.explorer.list_categories()
@@ -464,7 +476,7 @@ class LyftDataset:
         dot_size: int = 5,
         pointsensor_channel: str = "LIDAR_TOP",
         camera_channel: str = "CAM_FRONT",
-        out_path: str = None,
+        out_path: Optional[str] = None,
     ) -> None:
         self.explorer.render_pointcloud_in_image(
             sample_token,
@@ -478,10 +490,10 @@ class LyftDataset:
         self,
         sample_token: str,
         box_vis_level: BoxVisibility = BoxVisibility.ANY,
-        nsweeps: int = 1,
-        out_path: str = None,
+        num_sweeps: int = 1,
+        out_path: Optional[Path] = None,
     ) -> None:
-        self.explorer.render_sample(sample_token, box_vis_level, nsweeps=nsweeps, out_path=out_path)
+        self.explorer.render_sample(sample_token, box_vis_level, num_sweeps=num_sweeps, out_path=out_path)
 
     def render_sample_data(
         self,
@@ -489,11 +501,11 @@ class LyftDataset:
         with_anns: bool = True,
         box_vis_level: BoxVisibility = BoxVisibility.ANY,
         axes_limit: float = 40,
-        ax: Axes = None,
+        ax: Optional[Axes] = None,
         nsweeps: int = 1,
-        out_path: str = None,
+        out_path: Optional[Path] = None,
         underlay_map: bool = False,
-    ):
+    ) -> Optional[Path]:
         return self.explorer.render_sample_data(
             sample_data_token,
             with_anns,
@@ -518,8 +530,10 @@ class LyftDataset:
     def render_instance(self, instance_token: str, out_path: str = None) -> None:
         self.explorer.render_instance(instance_token, out_path=out_path)
 
-    def render_scene(self, scene_token: str, freq: float = 10, imwidth: int = 640, out_path: str = None) -> None:
-        self.explorer.render_scene(scene_token, freq, image_width=imwidth, out_path=out_path)
+    def render_scene(
+        self, scene_token: str, freq: float = 10, image_width: int = 640, out_path: Optional[Path] = None
+    ) -> None:
+        self.explorer.render_scene(scene_token, freq, image_width=image_width, out_path=out_path)
 
     def render_scene_channel(
         self,
@@ -541,7 +555,9 @@ class LyftDataset:
             verbose=verbose,
         )
 
-    def render_egoposes_on_map(self, log_location: str, scene_tokens: List = None, out_path: str = None) -> None:
+    def render_egoposes_on_map(
+        self, log_location: str, scene_tokens: Optional[List] = None, out_path: Optional[Path] = None
+    ) -> None:
         self.explorer.render_egoposes_on_map(log_location, scene_tokens, out_path=out_path)
 
     def render_sample_3d_interactive(self, sample_id: str, render_sample: bool = True) -> None:
@@ -553,12 +569,11 @@ class LyftDataset:
                                                                 sample along with annotations.)
 
         """
-        import pandas as pd
         import plotly.graph_objects as go
 
         sample = self.get("sample", sample_id)
         sample_data = self.get("sample_data", sample["data"]["LIDAR_TOP"])
-        pc = LidarPointCloud.from_file(self.data_path / sample_data["filename"])
+        pc = LidarPointCloud.from_file(self.lidar_path / Path(sample_data["filename"]).name)
         _, boxes, _ = self.get_sample_data(sample["data"]["LIDAR_TOP"], flat_vehicle_coordinates=False)
 
         if render_sample:
@@ -566,12 +581,21 @@ class LyftDataset:
 
         df_tmp = pd.DataFrame(pc.points[:3, :].T, columns=["x", "y", "z"])
         df_tmp["norm"] = np.sqrt(np.power(df_tmp[["x", "y", "z"]].values, 2).sum(axis=1))
+
         scatter = go.Scatter3d(
             x=df_tmp["x"],
             y=df_tmp["y"],
             z=df_tmp["z"],
             mode="markers",
-            marker=dict(size=1, color=df_tmp["norm"], opacity=0.8),
+            # marker=dict(size=1, color=df_tmp["norm"], opacity=0.8, colorscale=[(0.0, 'rgb(179,205,227)'),
+            #                                                                    (1, 'rgb(179,205,227)')]),
+            marker=dict(
+                size=1,
+                color=df_tmp["norm"],
+                opacity=1,
+                colorscale=[(0.0, "rgb(179,205,227)"), (1, "rgb(179,205,227)")],
+            ),
+            # marker=dict(size=1, color=color, opacity=0.8),
         )
 
         x_lines = []
@@ -602,10 +626,14 @@ class LyftDataset:
                 z_lines.extend(points[2, [ixs_box_0[i], ixs_box_1[i]]])
                 f_lines_add_nones()
 
-        lines = go.Scatter3d(x=x_lines, y=y_lines, z=z_lines, mode="lines", name="lines")
+        lines = go.Scatter3d(
+            x=x_lines, y=y_lines, z=z_lines, mode="lines", name="lines", marker={"color": [179, 205, 227]}
+        )
+        # lines = px.scatter_3d(x=x_lines, y=y_lines, z=z_lines, mode="lines", name="lines")
 
         fig = go.Figure(data=[scatter, lines])
         fig.update_layout(scene_aspectmode="data")
+        fig.update_layout(showlegend=False)
         fig.show()
 
 
@@ -613,11 +641,11 @@ class LyftDatasetExplorer:
     """Helper class to list and visualize Lyft Dataset data. These are meant to serve as tutorials and templates for
     working with the data."""
 
-    def __init__(self, lyftd: LyftDataset):
+    def __init__(self, lyftd: LyftDataset) -> None:
         self.lyftd = lyftd
 
     @staticmethod
-    def get_color(category_name: str) -> Tuple[int, int, int]:
+    def get_color(category_name: Optional[str]) -> Tuple[int, int, int]:
         """Provides the default colors based on the category names.
         This method works for the general Lyft Dataset categories, as well as the Lyft Dataset detection categories.
 
@@ -627,16 +655,26 @@ class LyftDatasetExplorer:
         Returns:
 
         """
-        if "bicycle" in category_name or "motorcycle" in category_name:
-            return 255, 61, 99  # Red
-        elif "vehicle" in category_name or category_name in ["bus", "car", "construction_vehicle", "trailer", "truck"]:
-            return 255, 158, 0  # Orange
-        elif "pedestrian" in category_name:
-            return 0, 0, 230  # Blue
-        elif "cone" in category_name or "barrier" in category_name:
-            return 0, 0, 0  # Black
-        else:
-            return 255, 0, 255  # Magenta
+        result = (242, 242, 242)
+
+        if category_name == "car":
+            result = (251, 180, 174)
+        elif category_name == "other_vehicle":
+            result = (179, 205, 227)
+        elif category_name == "pedestrian":
+            result = (204, 235, 197)
+        elif category_name == "bicycle":
+            result = (222, 203, 228)
+        elif category_name == "truck":
+            result = (254, 217, 166)
+        elif category_name == "bus":
+            result = (255, 255, 204)
+        elif category_name == "motorcycle":
+            result = (229, 216, 189)
+        elif category_name == "emergency_vehicle":
+            result = (253, 218, 236)
+
+        return result
 
     def list_categories(self) -> None:
         """Print categories, counts and stats."""
@@ -644,34 +682,61 @@ class LyftDatasetExplorer:
         print("Category stats")
 
         # Add all annotations
-        categories = dict()
+        categories: Dict = dict()
         for record in self.lyftd.sample_annotation:
             if record["category_name"] not in categories:
                 categories[record["category_name"]] = []
             categories[record["category_name"]].append(record["size"] + [record["size"][1] / record["size"][0]])
 
+        result: List[Tuple] = []
         # Print stats
         for name, stats in sorted(categories.items()):
             stats = np.array(stats)
-            print(
-                "{:27} n={:5}, width={:5.2f}\u00B1{:.2f}, len={:5.2f}\u00B1{:.2f}, height={:5.2f}\u00B1{:.2f}, "
-                "lw_aspect={:5.2f}\u00B1{:.2f}".format(
-                    name[:27],
+
+            result += [
+                (
+                    name.strip(),
                     stats.shape[0],
-                    np.mean(stats[:, 0]),
-                    np.std(stats[:, 0]),
-                    np.mean(stats[:, 1]),
-                    np.std(stats[:, 1]),
-                    np.mean(stats[:, 2]),
-                    np.std(stats[:, 2]),
-                    np.mean(stats[:, 3]),
-                    np.std(stats[:, 3]),
+                    stats[:, 0].mean(),
+                    stats[:, 0].std(),
+                    stats[:, 1].mean(),
+                    stats[:, 1].std(),
+                    stats[:, 2].mean(),
+                    stats[:, 2].std(),
+                    stats[:, 3].mean(),
+                    stats[:, 3].std(),
                 )
-            )
+            ]
+
+        df = pd.DataFrame(
+            result,
+            columns=[
+                "category",
+                "num_annotations",
+                "width_mean",
+                "width_std",
+                "length_mean",
+                "length_std",
+                "height_mean",
+                "height_std",
+                "lw_aspect_mean",
+                "lw_aspect_std",
+            ],
+        )
+
+        df["width"] = df["width_mean"].round(3).astype(str) + "\u00B1" + df["width_std"].round(3).astype(str)
+        df["length"] = df["length_mean"].round(3).astype(str) + "\u00B1" + df["length_std"].round(3).astype(str)
+        df["height"] = df["height_mean"].round(3).astype(str) + "\u00B1" + df["height_std"].round(3).astype(str)
+        df["lw_aspect"] = (
+            df["lw_aspect_mean"].round(3).astype(str) + "\u00B1" + df["lw_aspect_std"].round(3).astype(str)
+        )
+
+        df = df[["category", "num_annotations", "width", "length", "height", "lw_aspect"]]
+        print(df)
 
     def list_attributes(self) -> None:
         """Prints attributes and counts."""
-        attribute_counts = dict()
+        attribute_counts: Dict[str, int] = dict()
         for record in self.lyftd.sample_annotation:
             for attribute_token in record["attribute_tokens"]:
                 att_name = self.lyftd.get("attribute", attribute_token)["name"]
@@ -734,7 +799,7 @@ class LyftDatasetExplorer:
             print(f"sample_annotation_token: {ann_record['token']}, category: {ann_record['category_name']}")
 
     def map_pointcloud_to_image(self, pointsensor_token: str, camera_token: str) -> Tuple:
-        """Given a point sensor (lidar/radar) token and camera sample_data token, load point-cloud and map it to
+        """Given a point sensor lidar token and camera sample_data token, load point-cloud and map it to
         the image plane.
 
         Args:
@@ -747,43 +812,41 @@ class LyftDatasetExplorer:
 
         cam = self.lyftd.get("sample_data", camera_token)
         pointsensor = self.lyftd.get("sample_data", pointsensor_token)
-        pcl_path = self.lyftd.data_path / pointsensor["filename"]
-        if pointsensor["sensor_modality"] == "lidar":
-            pc = LidarPointCloud.from_file(pcl_path)
-        else:
-            pc = RadarPointCloud.from_file(pcl_path)
-        image = Image.open(str(self.lyftd.data_path / cam["filename"]))
+        pointcloud_path = self.lyftd.lidar_path / Path(pointsensor["filename"]).name
+        pointcloud = LidarPointCloud.from_file(pointcloud_path)
+
+        image = Image.open(str(self.lyftd.image_path / Path(cam["filename"]).name))
 
         # Points live in the point sensor frame. So they need to be transformed via global to the image plane.
         # First step: transform the point-cloud to the ego vehicle frame for the timestamp of the sweep.
         cs_record = self.lyftd.get("calibrated_sensor", pointsensor["calibrated_sensor_token"])
-        pc.rotate(Quaternion(cs_record["rotation"]).rotation_matrix)
-        pc.translate(np.array(cs_record["translation"]))
+        pointcloud.rotate(Quaternion(cs_record["rotation"]).rotation_matrix)
+        pointcloud.translate(np.array(cs_record["translation"]))
 
         # Second step: transform to the global frame.
         poserecord = self.lyftd.get("ego_pose", pointsensor["ego_pose_token"])
-        pc.rotate(Quaternion(poserecord["rotation"]).rotation_matrix)
-        pc.translate(np.array(poserecord["translation"]))
+        pointcloud.rotate(Quaternion(poserecord["rotation"]).rotation_matrix)
+        pointcloud.translate(np.array(poserecord["translation"]))
 
         # Third step: transform into the ego vehicle frame for the timestamp of the image.
         poserecord = self.lyftd.get("ego_pose", cam["ego_pose_token"])
-        pc.translate(-np.array(poserecord["translation"]))
-        pc.rotate(Quaternion(poserecord["rotation"]).rotation_matrix.T)
+        pointcloud.translate(-np.array(poserecord["translation"]))
+        pointcloud.rotate(Quaternion(poserecord["rotation"]).rotation_matrix.T)
 
         # Fourth step: transform into the camera.
         cs_record = self.lyftd.get("calibrated_sensor", cam["calibrated_sensor_token"])
-        pc.translate(-np.array(cs_record["translation"]))
-        pc.rotate(Quaternion(cs_record["rotation"]).rotation_matrix.T)
+        pointcloud.translate(-np.array(cs_record["translation"]))
+        pointcloud.rotate(Quaternion(cs_record["rotation"]).rotation_matrix.T)
 
         # Fifth step: actually take a "picture" of the point cloud.
         # Grab the depths (camera frame z axis points away from the camera).
-        depths = pc.points[2, :]
+        depths = pointcloud.points[2, :]
 
         # Retrieve the color from the depth.
         coloring = depths
 
         # Take the actual picture (matrix multiplication with camera-matrix + renormalization).
-        points = view_points(pc.points[:3, :], np.array(cs_record["camera_intrinsic"]), normalize=True)
+        points = view_points(pointcloud.points[:3, :], np.array(cs_record["camera_intrinsic"]), normalize=True)
 
         # Remove points that are either outside or behind the camera. Leave a margin of 1 pixel for aesthetic reasons.
         mask = np.ones(depths.shape[0], dtype=bool)
@@ -803,7 +866,7 @@ class LyftDatasetExplorer:
         dot_size: int = 2,
         pointsensor_channel: str = "LIDAR_TOP",
         camera_channel: str = "CAM_FRONT",
-        out_path: str = None,
+        out_path: Optional[str] = None,
     ) -> None:
         """Scatter-plots a point-cloud on top of image.
 
@@ -833,60 +896,58 @@ class LyftDatasetExplorer:
             plt.savefig(out_path)
 
     def render_sample(
-        self, token: str, box_vis_level: BoxVisibility = BoxVisibility.ANY, nsweeps: int = 1, out_path: str = None
+        self,
+        token: str,
+        box_vis_level: BoxVisibility = BoxVisibility.ANY,
+        num_sweeps: int = 1,
+        out_path: Optional[Path] = None,
+        underlay_map: bool = False,
     ) -> None:
         """Render all LIDAR and camera sample_data in sample along with annotations.
 
         Args:
             token: Sample token.
             box_vis_level: If sample_data is an image, this sets required visibility for boxes.
-            nsweeps: Number of sweeps for lidar and radar.
+            num_sweeps: Number of sweeps for lidar.
             out_path: Optional path to save the rendered figure to disk.
+            underlay_map:
 
         Returns:
 
         """
         record = self.lyftd.get("sample", token)
 
-        # Separate RADAR from LIDAR and vision.
-        radar_data = {}
-        nonradar_data = {}
-        for channel, token in record["data"].items():
-            sd_record = self.lyftd.get("sample_data", token)
-            sensor_modality = sd_record["sensor_modality"]
-            if sensor_modality in ["lidar", "camera"]:
-                nonradar_data[channel] = token
-            else:
-                radar_data[channel] = token
-
-        num_radar_plots = 1 if len(radar_data) > 0 else 0
+        data = {}
+        for channel, data_token in record["data"].items():
+            data[channel] = data_token
 
         # Create plots.
-        n = num_radar_plots + len(nonradar_data)
         cols = 2
-        fig, axes = plt.subplots(int(np.ceil(n / cols)), cols, figsize=(16, 24))
-
-        if len(radar_data) > 0:
-            # Plot radar into a single subplot.
-            ax = axes[0, 0]
-            for i, (_, sd_token) in enumerate(radar_data.items()):
-                self.render_sample_data(
-                    sd_token, with_annotations=i == 0, box_vis_level=box_vis_level, ax=ax, num_sweeps=nsweeps
-                )
-            ax.set_title("Fused RADARs")
+        fig, axes = plt.subplots(int(np.ceil(len(data) / cols)), cols, figsize=(16, 24))
 
         # Plot camera and lidar in separate subplots.
-        for (_, sd_token), ax in zip(nonradar_data.items(), axes.flatten()[num_radar_plots:]):
-            self.render_sample_data(sd_token, box_vis_level=box_vis_level, ax=ax, num_sweeps=nsweeps)
+        for (_, sd_token), ax in zip(data.items(), axes.flatten()):
+            # self.render_sample_data(
+            #     sd_token, box_vis_level=box_vis_level,
+            #     ax=ax, num_sweeps=num_sweeps, underlay_map=underlay_map, out_path=out_path
+            # )
+
+            self.save_plots_sample_data(
+                sd_token,
+                box_vis_level=box_vis_level,
+                ax=ax,
+                num_sweeps=num_sweeps,
+                underlay_map=underlay_map,
+                out_path=out_path,
+            )
 
         axes.flatten()[-1].axis("off")
-        plt.tight_layout()
-        fig.subplots_adjust(wspace=0, hspace=0)
+        # plt.tight_layout()
+        fig.subplots_adjust(wspace=0.01, hspace=0.1)
 
-        if out_path is not None:
-            plt.savefig(out_path)
-
-    def render_ego_centric_map(self, sample_data_token: str, axes_limit: float = 40, ax: Axes = None) -> None:
+    def render_ego_centric_map(
+        self, sample_data_token: str, axes_limit: float = 40, ax: Optional[Axes] = None
+    ) -> None:
         """Render map centered around the associated ego pose.
 
         Args:
@@ -912,17 +973,11 @@ class LyftDatasetExplorer:
         if ax is None:
             _, ax = plt.subplots(1, 1, figsize=(9, 9))
 
-        sample = self.lyftd.get("sample", sd_record["sample_token"])
-        scene = self.lyftd.get("scene", sample["scene_token"])
-        log = self.lyftd.get("log", scene["log_token"])
-        map = self.lyftd.get("map", log["map_token"])
-        map_mask = map["mask"]
-
         pose = self.lyftd.get("ego_pose", sd_record["ego_pose_token"])
-        pixel_coords = map_mask.to_pixel_coords(pose["translation"][0], pose["translation"][1])
+        pixel_coords = self.lyftd.map_mask.to_pixel_coords(pose["translation"][0], pose["translation"][1])
 
-        scaled_limit_px = int(axes_limit * (1.0 / map_mask.resolution))
-        mask_raster = map_mask.mask()
+        scaled_limit_px = int(axes_limit * (1.0 / self.lyftd.map_mask.resolution))
+        mask_raster = self.lyftd.map_mask.mask()
 
         cropped = crop_image(mask_raster, pixel_coords[0], pixel_coords[1], int(scaled_limit_px * math.sqrt(2)))
 
@@ -937,17 +992,17 @@ class LyftDatasetExplorer:
             ego_centric_map, extent=[-axes_limit, axes_limit, -axes_limit, axes_limit], cmap="gray", vmin=0, vmax=150
         )
 
-    def render_sample_data(
+    def save_plots_sample_data(
         self,
         sample_data_token: str,
         with_annotations: bool = True,
         box_vis_level: BoxVisibility = BoxVisibility.ANY,
         axes_limit: float = 40,
-        ax: Axes = None,
+        ax: Optional[Axes] = None,
         num_sweeps: int = 1,
-        out_path: str = None,
+        out_path: Optional[Path] = None,
         underlay_map: bool = False,
-    ):
+    ) -> Optional[Path]:
         """Render sample data onto axis.
 
         Args:
@@ -966,6 +1021,8 @@ class LyftDatasetExplorer:
         sd_record = self.lyftd.get("sample_data", sample_data_token)
         sensor_modality = sd_record["sensor_modality"]
 
+        channel = sd_record["channel"]
+
         if sensor_modality == "lidar":
             # Get boxes in lidar frame.
             _, boxes, _ = self.lyftd.get_sample_data(
@@ -974,10 +1031,148 @@ class LyftDatasetExplorer:
 
             # Get aggregated point cloud in lidar frame.
             sample_rec = self.lyftd.get("sample", sd_record["sample_token"])
-            chan = sd_record["channel"]
             ref_chan = "LIDAR_TOP"
-            pc, times = LidarPointCloud.from_file_multisweep(
-                self.lyftd, sample_rec, chan, ref_chan, num_sweeps=num_sweeps
+            pointcloud, _ = LidarPointCloud.from_file_multisweep(
+                self.lyftd, sample_rec, channel, ref_chan, num_sweeps=num_sweeps
+            )
+
+            # Compute transformation matrices for lidar point cloud
+            cs_record = self.lyftd.get("calibrated_sensor", sd_record["calibrated_sensor_token"])
+            pose_record = self.lyftd.get("ego_pose", sd_record["ego_pose_token"])
+            vehicle_from_sensor = np.eye(4)
+            vehicle_from_sensor[:3, :3] = Quaternion(cs_record["rotation"]).rotation_matrix
+            vehicle_from_sensor[:3, 3] = cs_record["translation"]
+
+            ego_yaw = Quaternion(pose_record["rotation"]).yaw_pitch_roll[0]
+            rot_vehicle_flat_from_vehicle = np.dot(
+                Quaternion(scalar=np.cos(ego_yaw / 2), vector=[0, 0, np.sin(ego_yaw / 2)]).rotation_matrix,
+                Quaternion(pose_record["rotation"]).inverse.rotation_matrix,
+            )
+
+            vehicle_flat_from_vehicle = np.eye(4)
+            vehicle_flat_from_vehicle[:3, :3] = rot_vehicle_flat_from_vehicle
+
+            # # Init axes.
+            # if ax is None:
+            # _, ax = plt.subplots(1, 1, figsize=(9, 9))
+            _, ax = plt.subplots(1, 1, figsize=(6, 6))
+
+            if underlay_map:
+                self.render_ego_centric_map(sample_data_token=sample_data_token, axes_limit=axes_limit, ax=ax)
+
+            # Show point cloud.
+            points = view_points(
+                pointcloud.points[:3, :], np.dot(vehicle_flat_from_vehicle, vehicle_from_sensor), normalize=False
+            )
+            dists = np.sqrt(np.sum(pointcloud.points[:2, :] ** 2, axis=0))
+            colors = np.minimum(1, dists / axes_limit / np.sqrt(2))
+            # ax.scatter(points[0, :], points[1, :], c=colors, s=0.2)
+            print(colors.shape)
+            print(np.array([222, 203, 228] * len(colors)))
+            ax.scatter(points[0, :], points[1, :], color=np.array([179, 205, 227]) / 255, s=0.2)
+            #
+            # plt.scatter(points[0, :], points[1, :], c=colors, s=0.2)
+
+            # Show ego vehicle.
+            ax.plot(0, 0, "x", color="red")
+
+            # Show boxes.
+            if with_annotations:
+                for box in boxes:
+                    c = np.array(self.get_color(box.name)) / 255.0
+                    box.render(ax, view=np.eye(4), colors=(c, c, c))
+
+            # Limit visible range.
+            ax.set_xlim(-axes_limit, axes_limit)
+            ax.set_ylim(-axes_limit, axes_limit)
+
+        elif sensor_modality == "camera":
+            # Load boxes and image.
+            data_path, boxes, camera_intrinsic = self.lyftd.get_sample_data(
+                sample_data_token, box_vis_level=box_vis_level
+            )
+
+            data = Image.open(data_path)
+
+            # # Init axes.
+
+            # _, ax = plt.subplots(1, 1, figsize=(9, 16))
+            # _, ax = plt.subplots(1, 1, figsize=(9, 6))
+            _, ax = plt.subplots(1, 1)
+
+            # Show image.
+            ax.imshow(data)
+            # plt.imshow(data)
+
+            # Show boxes.
+            if with_annotations:
+                for box in boxes:
+                    c = np.array(self.get_color(box.name)) / 255.0
+                    box.render(ax, view=camera_intrinsic, normalize=True, colors=(c, c, c))
+
+            # Limit visible range.
+            ax.set_xlim(0, data.size[0])
+            ax.set_ylim(data.size[1], 0)
+
+        else:
+            raise ValueError(f"Error: Unknown sensor modality! Got {sensor_modality}")
+
+        ax.axis("off")
+        # ax.set_title(sd_record["channel"], fontsize=15)
+        ax.set_aspect("equal")
+        plt.tight_layout()
+
+        if out_path is not None:
+            print("Channel = ", channel)
+            plt.savefig(Path(out_path) / f"{channel}.png", dpi=150, bbox_inches="tight")
+            plt.close("all")
+
+            return Path(out_path) / f"{channel}.png"
+
+        return out_path
+
+    def render_sample_data(
+        self,
+        sample_data_token: str,
+        with_annotations: bool = True,
+        box_vis_level: BoxVisibility = BoxVisibility.ANY,
+        axes_limit: float = 40,
+        ax: Optional[Axes] = None,
+        num_sweeps: int = 1,
+        out_path: Optional[Path] = None,
+        underlay_map: bool = False,
+    ) -> Optional[Path]:
+        """Render sample data onto axis.
+
+        Args:
+            sample_data_token: Sample_data token.
+            with_annotations: Whether to draw annotations.
+            box_vis_level: If sample_data is an image, this sets required visibility for boxes.
+            axes_limit: Axes limit for lidar and radar (measured in meters).
+            ax: Axes onto which to render.
+            num_sweeps: Number of sweeps for lidar and radar.
+            out_path: Optional path to save the rendered figure to disk.
+            underlay_map: When set to true, LIDAR data is plotted onto the map. This can be slow.
+
+        """
+
+        # Get sensor modality.
+        sd_record = self.lyftd.get("sample_data", sample_data_token)
+        sensor_modality = sd_record["sensor_modality"]
+
+        channel = sd_record["channel"]
+
+        if sensor_modality == "lidar":
+            # Get boxes in lidar frame.
+            _, boxes, _ = self.lyftd.get_sample_data(
+                sample_data_token, box_vis_level=box_vis_level, flat_vehicle_coordinates=True
+            )
+
+            # Get aggregated point cloud in lidar frame.
+            sample_rec = self.lyftd.get("sample", sd_record["sample_token"])
+            ref_chan = "LIDAR_TOP"
+            pointcloud, _ = LidarPointCloud.from_file_multisweep(
+                self.lyftd, sample_rec, channel, ref_chan, num_sweeps=num_sweeps
             )
 
             # Compute transformation matrices for lidar point cloud
@@ -1005,72 +1200,14 @@ class LyftDatasetExplorer:
 
             # Show point cloud.
             points = view_points(
-                pc.points[:3, :], np.dot(vehicle_flat_from_vehicle, vehicle_from_sensor), normalize=False
+                pointcloud.points[:3, :], np.dot(vehicle_flat_from_vehicle, vehicle_from_sensor), normalize=False
             )
-            dists = np.sqrt(np.sum(pc.points[:2, :] ** 2, axis=0))
+            dists = np.sqrt(np.sum(pointcloud.points[:2, :] ** 2, axis=0))
             colors = np.minimum(1, dists / axes_limit / np.sqrt(2))
             ax.scatter(points[0, :], points[1, :], c=colors, s=0.2)
 
             # Show ego vehicle.
             ax.plot(0, 0, "x", color="red")
-
-            # Show boxes.
-            if with_annotations:
-                for box in boxes:
-                    c = np.array(self.get_color(box.name)) / 255.0
-                    box.render(ax, view=np.eye(4), colors=(c, c, c))
-
-            # Limit visible range.
-            ax.set_xlim(-axes_limit, axes_limit)
-            ax.set_ylim(-axes_limit, axes_limit)
-
-        elif sensor_modality == "radar":
-            # Get boxes in lidar frame.
-            sample_rec = self.lyftd.get("sample", sd_record["sample_token"])
-            lidar_token = sample_rec["data"]["LIDAR_TOP"]
-            _, boxes, _ = self.lyftd.get_sample_data(lidar_token, box_vis_level=box_vis_level)
-
-            # Get aggregated point cloud in lidar frame.
-            # The point cloud is transformed to the lidar frame for visualization purposes.
-            chan = sd_record["channel"]
-            ref_chan = "LIDAR_TOP"
-            pc, times = RadarPointCloud.from_file_multisweep(
-                self.lyftd, sample_rec, chan, ref_chan, num_sweeps=num_sweeps
-            )
-
-            # Transform radar velocities (x is front, y is left), as these are not transformed when loading the point
-            # cloud.
-            radar_cs_record = self.lyftd.get("calibrated_sensor", sd_record["calibrated_sensor_token"])
-            lidar_sd_record = self.lyftd.get("sample_data", lidar_token)
-            lidar_cs_record = self.lyftd.get("calibrated_sensor", lidar_sd_record["calibrated_sensor_token"])
-            velocities = pc.points[8:10, :]  # Compensated velocity
-            velocities = np.vstack((velocities, np.zeros(pc.points.shape[1])))
-            velocities = np.dot(Quaternion(radar_cs_record["rotation"]).rotation_matrix, velocities)
-            velocities = np.dot(Quaternion(lidar_cs_record["rotation"]).rotation_matrix.T, velocities)
-            velocities[2, :] = np.zeros(pc.points.shape[1])
-
-            # Init axes.
-            if ax is None:
-                _, ax = plt.subplots(1, 1, figsize=(9, 9))
-
-            # Show point cloud.
-            points = view_points(pc.points[:3, :], np.eye(4), normalize=False)
-            dists = np.sqrt(np.sum(pc.points[:2, :] ** 2, axis=0))
-            colors = np.minimum(1, dists / axes_limit / np.sqrt(2))
-            sc = ax.scatter(points[0, :], points[1, :], c=colors, s=3)
-
-            # Show velocities.
-            points_vel = view_points(pc.points[:3, :] + velocities, np.eye(4), normalize=False)
-            max_delta = 10
-            deltas_vel = points_vel - points
-            deltas_vel = 3 * deltas_vel  # Arbitrary scaling
-            deltas_vel = np.clip(deltas_vel, -max_delta, max_delta)  # Arbitrary clipping
-            colors_rgba = sc.to_rgba(colors)
-            for i in range(points.shape[1]):
-                ax.arrow(points[0, i], points[1, i], deltas_vel[0, i], deltas_vel[1, i], color=colors_rgba[i])
-
-            # Show ego vehicle.
-            ax.plot(0, 0, "x", color="black")
 
             # Show boxes.
             if with_annotations:
@@ -1108,18 +1245,19 @@ class LyftDatasetExplorer:
             ax.set_ylim(data.size[1], 0)
 
         else:
-            raise ValueError("Error: Unknown sensor modality!")
+            raise ValueError(f"Error: Unknown sensor modality! Got {sensor_modality}")
 
         ax.axis("off")
         ax.set_title(sd_record["channel"])
         ax.set_aspect("equal")
 
         if out_path is not None:
-            num = len([name for name in os.listdir(out_path)])
-            out_path = out_path + str(num).zfill(5) + "_" + sample_data_token + ".png"
-            plt.savefig(out_path)
+            plt.savefig(Path(out_path) / f"{channel}_{sample_data_token}.png")
             plt.close("all")
-            return out_path
+
+            return Path(out_path) / f"{channel}_{sample_data_token}.png"
+
+        return out_path
 
     def render_annotation(
         self,
@@ -1146,10 +1284,10 @@ class LyftDatasetExplorer:
         if "LIDAR_TOP" not in sample_record["data"].keys():
             raise KeyError("No LIDAR_TOP in data, cant render")
 
-        fig, axes = plt.subplots(1, 2, figsize=(18, 9))
+        _, axes = plt.subplots(1, 2, figsize=(18, 9))
 
         # Figure out which camera the object is fully visible in (this may return nothing)
-        boxes, cam = [], []
+        boxes: List[Box] = []
         cams = [key for key in sample_record["data"].keys() if "CAM" in key]
         for cam in cams:
             _, boxes, _ = self.lyftd.get_sample_data(
@@ -1157,8 +1295,12 @@ class LyftDatasetExplorer:
             )
             if len(boxes) > 0:
                 break  # We found an image that matches. Let's abort.
-        assert len(boxes) > 0, "Could not find image where annotation is visible. Try using e.g. BoxVisibility.ANY."
-        assert len(boxes) < 2, "Found multiple annotations. Something is wrong!"
+
+        if len(boxes) == 0:
+            raise ValueError("Could not find image where annotation is visible. Try using e.g. BoxVisibility.ANY.")
+
+        if len(boxes) >= 2:
+            raise KeyError(f"Found {len(boxes)} annotations. But we should have only one. Something is wrong!")
 
         cam = sample_record["data"][cam]
 
@@ -1243,8 +1385,8 @@ class LyftDatasetExplorer:
         cv2.moveWindow(window_name, 0, 0)
 
         # Load first sample_data record for each channel
-        current_recs = {}  # Holds the current record to be displayed by channel.
-        prev_recs = {}  # Hold the previous displayed record by channel.
+        current_recs: Dict = {}  # Holds the current record to be displayed by channel.
+        prev_recs: Dict = {}  # Hold the previous displayed record by channel.
         for channel in channels:
             current_recs[channel] = self.lyftd.get("sample_data", first_sample_rec["data"][channel])
             prev_recs[channel] = None
@@ -1273,7 +1415,6 @@ class LyftDatasetExplorer:
         current_time = first_sample_rec["timestamp"]
 
         while current_time < last_sample_rec["timestamp"]:
-
             current_time += time_step
 
             # For each channel, find first sample that has time > current_time.
@@ -1296,20 +1437,20 @@ class LyftDatasetExplorer:
                     # Load and render
                     if not image_path.exists():
                         raise Exception("Error: Missing image %s" % image_path)
-                    im = cv2.imread(str(image_path))
+                    image = cv2.imread(str(image_path))
                     for box in boxes:
                         c = self.get_color(box.name)
-                        box.render_cv2(im, view=camera_intrinsic, normalize=True, colors=(c, c, c))
+                        box.render_cv2(image, view=camera_intrinsic, normalize=True, colors=(c, c, c))
 
-                    im = cv2.resize(im, image_size)
+                    image = cv2.resize(image, image_size)
                     if channel in horizontal_flip:
-                        im = im[:, ::-1, :]
+                        image = image[:, ::-1, :]
 
                     canvas[
                         layout[channel][1] : layout[channel][1] + image_size[1],
                         layout[channel][0] : layout[channel][0] + image_size[0],
                         :,
-                    ] = im
+                    ] = image
 
                     prev_recs[channel] = sd_rec  # Store here so we don't render the same image twice.
 
@@ -1401,7 +1542,7 @@ class LyftDatasetExplorer:
 
             # Load and render
             if not image_path.exists():
-                raise FileNotFoundError("Error: Missing image %s" % image_path)
+                raise FileNotFoundError(f"Error: Missing image {image_path}")
 
             image = cv2.imread(str(image_path))
             for box in boxes:
@@ -1469,7 +1610,6 @@ class LyftDatasetExplorer:
             print("Warning: Found 0 valid scenes for location %s!" % log_location)
 
         map_poses = []
-        map_mask = None
 
         print("Adding ego poses to map...")
         for scene_token in tqdm(scene_tokens_location):
@@ -1526,7 +1666,7 @@ class LyftDatasetExplorer:
         ax.imshow(mask)
         title = f"Number of ego poses within {close_dist}m in {log_location}"
         ax.set_title(title, color="k")
-        sc = ax.scatter(map_poses[:, 0], map_poses[:, 1], s=10, c=close_poses)
+        sc = ax.scatter(map_poses[:, 0], map_poses[:, 1], s=10, c=close_poses)  # type: ignore
         color_bar = plt.colorbar(sc, fraction=0.025, pad=0.04)
         plt.rcParams["figure.facecolor"] = "black"
         color_bar_ticklabels = plt.getp(color_bar.ax.axes, "yticklabels")

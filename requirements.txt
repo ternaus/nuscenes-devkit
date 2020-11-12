@@ -2,6 +2,7 @@ black
 cachetools>=3.1.0
 fire
 flake8
+iglovikov_helper_functions
 matplotlib
 numpy>=1.14.5
 opencv-python>=3.4.2.17

@@ -6,7 +6,7 @@ from hypothesis import strategies as st
 from hypothesis.extra.numpy import arrays
 from pyquaternion import Quaternion
 
-from lyft_dataset_sdk.utils.data_classes import Box
+from lyft_dataset_sdk.Box import Box
 
 pi = math.pi
 

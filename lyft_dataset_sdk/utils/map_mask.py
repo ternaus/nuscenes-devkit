@@ -3,52 +3,66 @@
 # Licensed under the Creative Commons [see licence.txt]
 # Modified by Vladimir Iglovikov 2019.
 
-from typing import Tuple, Any
+from pathlib import Path
+from typing import Any, Optional, Tuple
 
 import cv2
 import numpy as np
+from cachetools import LRUCache, cached
 from PIL import Image
-from cachetools import cached, LRUCache
-from pathlib import Path
 
 # Set the maximum loadable image size.
 Image.MAX_IMAGE_PIXELS = 400000 * 400000
 
 
 class MapMask:
-    def __init__(self, img_file: Path, resolution: float = 0.1):
+    def __init__(self, image_path: Optional[str], resolution: float = 0.1) -> None:
+        """Init a map mask object that contains the semantic prior (drivable surface and sidewalks) mask.
+
+        Args:
+            image_path: File path to map png file.
+            resolution: Map resolution in meters.
         """
-        Init a map mask object that contains the semantic prior (drivable surface and sidewalks) mask.
-        :param img_file: File path to map png file.
-        :param resolution: Map resolution in meters.
-        """
-        assert img_file.exists(), "map mask {} does not exist".format(img_file)
-        assert resolution >= 0.1, "Only supports down to 0.1 meter resolution."
-        self.img_file = img_file
-        self.resolution = resolution
-        self.foreground = 255
-        self.background = 0
+        if image_path is None:
+            self.is_none = None
+        else:
+            assert Path(image_path).exists(), f"map mask {image_path} does not exist"
+            assert resolution >= 0.1, "Only supports down to 0.1 meter resolution."
+            self.img_file = image_path
+            self.resolution = resolution
+            self.foreground = 255
+            self.background = 0
 
     @cached(cache=LRUCache(maxsize=3))
     def mask(self, dilation: float = 0.0) -> np.ndarray:
+        """Returns the map mask, optionally dilated.
+
+        Args:
+            dilation: Dilation in meters.
+
+        Returns: Dilated map mask.
+
         """
-        Returns the map mask, optionally dilated.
-        :param dilation: Dilation in meters.
-        :return: Dilated map mask.
-        """
+        if self.is_none is None:
+            return None
+
         if dilation == 0:
             return self._base_mask
-        else:
-            distance_mask = cv2.distanceTransform((self.foreground - self._base_mask).astype(np.uint8), cv2.DIST_L2, 5)
-            distance_mask = (distance_mask * self.resolution).astype(np.float32)
-            return (distance_mask <= dilation).astype(np.uint8) * self.foreground
+
+        distance_mask = cv2.distanceTransform((self.foreground - self._base_mask).astype(np.uint8), cv2.DIST_L2, 5)
+        distance_mask = (distance_mask * self.resolution).astype(np.float32)
+        return (distance_mask <= dilation).astype(np.uint8) * self.foreground
 
     @property
     def transform_matrix(self) -> np.ndarray:
+        """Generate transform matrix for this map mask.
+
+        Returns: <np.array: 4, 4>. The transformation matrix.
+
         """
-        Generate transform matrix for this map mask.
-        :return: <np.array: 4, 4>. The transformation matrix.
-        """
+        if self.is_none is None:
+            return None
+
         return np.array(
             [
                 [1.0 / self.resolution, 0, 0, 0],
@@ -58,14 +72,20 @@ class MapMask:
             ]
         )
 
-    def is_on_mask(self, x: Any, y: Any, dilation: float = 0) -> np.array:
+    def is_on_mask(self, x: Any, y: Any, dilation: float = 0) -> np.ndarray:
+        """Determine whether the given coordinates are on the (optionally dilated) map mask.
+
+        Args:
+            x: Global x coordinates. Can be a scalar, list or a numpy array of x coordinates.
+            y: Global y coordinates. Can be a scalar, list or a numpy array of x coordinates.
+            dilation: Optional dilation of map mask.
+
+        Returns: <np.bool: x.shape>. Whether the points are on the mask.
+
         """
-        Determine whether the given coordinates are on the (optionally dilated) map mask.
-        :param x: Global x coordinates. Can be a scalar, list or a numpy array of x coordinates.
-        :param y: Global y coordinates. Can be a scalar, list or a numpy array of x coordinates.
-        :param dilation: Optional dilation of map mask.
-        :return: <np.bool: x.shape>. Whether the points are on the mask.
-        """
+        if self.mask is None:
+            return None
+
         px, py = self.to_pixel_coords(x, y)
 
         on_mask = np.ones(px.size, dtype=np.bool)
@@ -81,12 +101,18 @@ class MapMask:
         return on_mask
 
     def to_pixel_coords(self, x: Any, y: Any) -> Tuple[np.ndarray, np.ndarray]:
+        """Maps x, y location in global map coordinates to the map image coordinates.
+
+        Args:
+            x: Global x coordinates. Can be a scalar, list or a numpy array of x coordinates.
+            y: Global y coordinates. Can be a scalar, list or a numpy array of x coordinates.
+
+        Returns: (px <np.uint8: x.shape>, py <np.uint8: y.shape>). Pixel coordinates in map.
+
         """
-        Maps x, y location in global map coordinates to the map image coordinates.
-        :param x: Global x coordinates. Can be a scalar, list or a numpy array of x coordinates.
-        :param y: Global y coordinates. Can be a scalar, list or a numpy array of x coordinates.
-        :return: (px <np.uint8: x.shape>, py <np.uint8: y.shape>). Pixel coordinates in map.
-        """
+        if self.is_none is None:
+            return np.array([-np.inf]), np.array([-np.inf])
+
         x = np.array(x)
         y = np.array(y)
         x = np.atleast_1d(x)
@@ -100,13 +126,17 @@ class MapMask:
 
         return pixel_coords[0, :], pixel_coords[1, :]
 
-    @property
+    @property  # type: ignore
     @cached(cache=LRUCache(maxsize=1))
     def _base_mask(self) -> np.ndarray:
+        """Returns the original binary mask stored in map png file.
+
+        Returns: <np.int8: image.height, image.width>. The binary mask.
+
         """
-        Returns the original binary mask stored in map png file.
-        :return: <np.int8: image.height, image.width>. The binary mask.
-        """
+        if self.is_none is None:
+            return None
+
         # Pillow allows us to specify the maximum image size above, whereas this is more difficult in OpenCV.
         img = Image.open(self.img_file)
 

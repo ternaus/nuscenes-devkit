@@ -1,0 +1,12 @@
+---
+
+class_names:
+ - animal
+ - bicycle
+ - bus
+ - car
+ - emergency_vehicle
+ - motorcycle
+ - other_vehicle
+ - pedestrian
+ - truck

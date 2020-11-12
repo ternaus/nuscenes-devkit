@@ -7,8 +7,8 @@ import unittest
 import numpy as np
 from pyquaternion import Quaternion
 
-from lyft_dataset_sdk.utils.data_classes import Box
-from lyft_dataset_sdk.utils.geometry_utils import points_in_box, quaternion_yaw
+from lyft_dataset_sdk.Box import Box
+from lyft_dataset_sdk.geometry_utils import points_in_box, quaternion_yaw
 
 
 class TestGeometryUtils(unittest.TestCase):

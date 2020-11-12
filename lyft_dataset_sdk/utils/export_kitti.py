@@ -31,13 +31,14 @@ import fire
 import matplotlib.pyplot as plt
 import numpy as np
 from joblib import Parallel, delayed, parallel_backend
-from lyft_dataset_sdk.lyftdataset import LyftDataset
-from lyft_dataset_sdk.utils.data_classes import LidarPointCloud
-from lyft_dataset_sdk.utils.geometry_utils import BoxVisibility, transform_matrix
-from lyft_dataset_sdk.utils.kitti import KittiDB
 from PIL import Image
 from pyquaternion import Quaternion
 from tqdm import tqdm
+
+from lyft_dataset_sdk.data_classes import LidarPointCloud
+from lyft_dataset_sdk.geometry_utils import BoxVisibility, transform_matrix
+from lyft_dataset_sdk.lyftdataset import LyftDataset
+from lyft_dataset_sdk.utils.kitti import KittiDB
 
 
 class KittiConverter:
@@ -55,8 +56,9 @@ class KittiConverter:
 
     def nuscenes_gt_to_kitti(
         self,
-        lyft_dataroot: str,
-        table_folder: str,
+        lyft_images: str,
+        lyft_lidar: str,
+        lyft_json: str,
         lidar_name: str = "LIDAR_TOP",
         get_all_detections: bool = False,
         parallel_n_jobs: int = 4,
@@ -65,8 +67,9 @@ class KittiConverter:
         """Converts nuScenes GT formatted annotations to KITTI format.
 
         Args:
-            lyft_dataroot: folder with tables (json files).
-            table_folder: folder with tables (json files).
+            lyft_images: path to images
+            lyft_lidar: path to lidar
+            lyft_json: path to json
             lidar_name: Name of the lidar sensor.
                 Only one lidar allowed at this moment.
             get_all_detections: If True, will write all
@@ -75,15 +78,14 @@ class KittiConverter:
             samples_count: Number of samples to convert.
 
         """
-        self.lyft_dataroot = lyft_dataroot
-        self.table_folder = table_folder
+
         self.lidar_name = lidar_name
         self.get_all_detections = get_all_detections
         self.samples_count = samples_count
         self.parallel_n_jobs = parallel_n_jobs
 
         # Select subset of the data to look at.
-        self.lyft_ds = LyftDataset(self.lyft_dataroot, self.table_folder)
+        self.lyft_ds = LyftDataset(image_path=lyft_images, lidar_path=lyft_lidar, json_path=lyft_json)
 
         self.kitti_to_nu_lidar = Quaternion(axis=(0, 0, 1), angle=np.pi)
         self.kitti_to_nu_lidar_inv = self.kitti_to_nu_lidar.inverse
@@ -188,7 +190,7 @@ class KittiConverter:
             filename_lid_full = sd_record_lid["filename"]
 
             # Convert image (jpg to png).
-            src_im_path = self.lyft_ds.data_path.joinpath(filename_cam_full)
+            src_im_path = self.lyft_ds.image_path.joinpath(filename_cam_full)
             dst_im_path = self.image_folder.joinpath(f"{token_to_write}.png")
             if not dst_im_path.exists():
                 im = Image.open(src_im_path)
@@ -196,7 +198,7 @@ class KittiConverter:
 
             # Convert lidar.
             # Note that we are only using a single sweep, instead of the commonly used n sweeps.
-            src_lid_path = self.lyft_ds.data_path.joinpath(filename_lid_full)
+            src_lid_path = self.lyft_ds.lidar_path.joinpath(filename_lid_full)
             dst_lid_path = self.lidar_folder.joinpath(f"{token_to_write}.bin")
 
             pcl = LidarPointCloud.from_file(Path(src_lid_path))
@@ -226,7 +228,7 @@ class KittiConverter:
                     val_str = "%.12e" % val[0]
                     for v in val[1:]:
                         val_str += " %.12e" % v
-                    calib_file.write("%s: %s\n" % (key, val_str))
+                    calib_file.write(f"{key}: {val_str}\n")
 
             # Write label file.
             label_path = self.label_folder.joinpath(f"{token_to_write}.txt")
@@ -238,10 +240,10 @@ class KittiConverter:
                     sample_annotation = self.lyft_ds.get("sample_annotation", sample_annotation_token)
 
                     # Get box in LIDAR frame.
-                    _, box_lidar_nusc, _ = self.lyft_ds.get_sample_data(
+                    _, boxes_lidar_nuscenes, _ = self.lyft_ds.get_sample_data(
                         lidar_token, box_vis_level=BoxVisibility.NONE, selected_anntokens=[sample_annotation_token]
                     )
-                    box_lidar_nusc = box_lidar_nusc[0]
+                    box_lidar_nuscenes = boxes_lidar_nuscenes[0]
 
                     # Truncated: Set all objects to 0 which means untruncated.
                     truncated = 0.0
@@ -254,16 +256,16 @@ class KittiConverter:
 
                     # Convert from nuScenes to KITTI box format.
                     box_cam_kitti = KittiDB.box_nuscenes_to_kitti(
-                        box_lidar_nusc, Quaternion(matrix=velo_to_cam_rot), velo_to_cam_trans, r0_rect
+                        box_lidar_nuscenes, Quaternion(matrix=velo_to_cam_rot), velo_to_cam_trans, r0_rect
                     )
 
                     # Project 3d box to 2d box in image, ignore box if it does not fall inside.
-                    bbox_2d = KittiDB.project_kitti_box_to_image(box_cam_kitti, p_left_kitti, imsize=imsize)
-                    if bbox_2d is None and not self.get_all_detections:
-                        continue
-                    elif bbox_2d is None and self.get_all_detections:
+                    bbox_2d = KittiDB.project_kitti_box_to_image(box_cam_kitti, p_left_kitti, image_size=imsize)
+                    if bbox_2d is None:
+                        if self.get_all_detections:
+                            continue
                         # default KITTI bbox
-                        bbox_2d = (-1.0, -1.0, -1.0, -1.0)
+                        bbox_2d = (-1, -1, -1, -1)
 
                     # Set dummy score so we can use this file as result.
                     box_cam_kitti.score = 0

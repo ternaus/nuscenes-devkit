@@ -1,8 +1,14 @@
-import math
-from lyft_dataset_sdk.eval.detection.mAP_evaluation import recall_precision, group_by_key, Box3D
 import json
+import math
+
 import numpy as np
 import pytest
+
+from lyft_dataset_sdk.eval.detection.mAP_evaluation import (
+    Box3D,
+    group_by_key,
+    recall_precision,
+)
 
 
 @pytest.mark.parametrize(
@@ -68,7 +74,13 @@ def test_ground_area(rotation):
 )
 def test_intersection(target_box, intersection):
     original_box = Box3D(translation=[0, 0, 1.5], size=[2, 4, 3], rotation=[1, 0, 0, 0], name="car", sample_token="")
-    assert np.isclose(original_box.get_intersection(target_box), intersection, rtol=1e-05, atol=1e-08, equal_nan=False)
+    assert np.isclose(
+        original_box.get_intersection(target_box, iou_threshold=0.5),
+        intersection,
+        rtol=1e-05,
+        atol=1e-08,
+        equal_nan=False,
+    )
 
 
 def test_self():
@@ -113,7 +125,7 @@ def test_self():
         )
     ],
 )
-def test_intersection_couples(original_box, target_box, intersection, height_intersection, area_intersection):
+def test_intersection_couples(original_box, target_box, height_intersection, area_intersection):
     assert np.isclose(
         original_box.get_height_intersection(target_box), height_intersection, rtol=1e-05, atol=1e-08, equal_nan=False
     )
@@ -164,7 +176,7 @@ def test_itself(iou_threshold):
     gt_by_class_name = group_by_key(list_boxes, "name")
     pred_by_class_name = group_by_key(list_boxes, "name")
 
-    recalls, precisions, average_precision = recall_precision(
+    _, _, average_precision = recall_precision(
         gt_by_class_name[class_name], pred_by_class_name[class_name], iou_threshold
     )
 
@@ -229,7 +241,7 @@ def calc_map(gt_file, pred_file, iou_threshold=0.5):
 )
 def test_ground_truth(iou):
     """
-        Test for ground truth
+    Test for ground truth
     """
     gt_file = gt_file_without_all_classes
     pred_file = true_res_without_all_classes
@@ -244,7 +256,7 @@ def test_ground_truth(iou):
 )
 def test_ground_truth_with_all_classes(iou):
     """
-        Test for ground truth with all classes present
+    Test for ground truth with all classes present
     """
     gt_file = gt_file_with_all_classes
     pred_file = true_res_with_all_classes
@@ -254,74 +266,11 @@ def test_ground_truth_with_all_classes(iou):
     assert mAP == 1
 
 
-# def test_ground_truth_with_one_class_in_pred():
-#     """
-#         Test for ground truth with all classes present.
-#
-#         Prediction and ground truth contains same bounding boxes.
-#         But all are predicted as car.
-#
-#     """
-#     gt_file = gt_file_with_all_classes
-#     pred_file = res_file_with_wrong_name
-#     mAP = calc_map(gt_file, pred_file)
-#
-#     # AP for car = 1/9
-#     # AP for all other classes = 0
-#     assert mAP == ((0 * 8) + 1 / 9) / 9
-
-
-# def test_false_positive_gt():
-#     """
-#         Test for false positive when the extra prediction is a class
-#         in ground truth
-#     """
-#     gt_file = gt_file_without_all_classes
-#     pred_file = res_file_with_fp_gt
-#     mAP = calc_map(gt_file, pred_file)
-#
-#     # 5 classes are not present in ground truth and prediction - AP = 1
-#     # There are 3 classes predicted correctly - AP = 1
-#     # There are 1 car in ground truth and 2 cars in prediction - AP = 1 / 2
-#     assert mAP == ((1 * 8) + 0.5) / 9
-
-
-# def test_false_positive_random():
-#     """
-#         Test for false positive when the extra prediction is a class
-#         not in ground truth
-#     """
-#     gt_file = gt_file_without_all_classes
-#     pred_file = res_file_with_fp_random
-#     mAP = calc_map(gt_file, pred_file)
-#
-#     # 4 classes are not present in ground truth and prediction - AP = 1
-#     # There are 4 classes in ground predicted correctly - AP = 1
-#     # There is no sample for truck in ground truth,
-#     # but 1 truck in prediction - AP = 0
-#     assert mAP == ((1 * 8) + 0) / 9
-
-
-# def test_false_negative():
-#     """
-#         Test for the case when there is the prediction is missing
-#         a sample
-#     """
-#     gt_file = gt_file_without_all_classes
-#     pred_file = res_file_with_false_neg
-#     mAP = calc_map(gt_file, pred_file)
-#
-#     # 5 classes are not present in ground truth and prediction - AP = 1
-#     # There are 3 classes in ground truth predicted correctly - AP = 1
-#     # There is 1 class in ground truth missing in predicition - AP = 0
-#     assert mAP == ((1 * 8) + 0) / 9
-
-
 def get_ground_truth_and_pred_box():
     gt_file = gt_file_with_all_classes
     pred_file = true_res_with_all_classes
 
-    with open(gt_file, "r") as ground_truth:
+    with open(gt_file) as ground_truth:
         data = json.load(ground_truth)
 
     ground_truth_box = Box3D(
@@ -332,7 +281,7 @@ def get_ground_truth_and_pred_box():
         name=data[0]["name"],
     )
 
-    with open(pred_file, "r") as prediction_file:
+    with open(pred_file) as prediction_file:
         data = json.load(prediction_file)
 
     prediction_box = Box3D(
@@ -346,7 +295,7 @@ def get_ground_truth_and_pred_box():
     return ground_truth_box, prediction_box
 
 
-def modify_prediction_and_get_box(translation=[0, 0, 0], size=[1, 1, 1], rotation=[0, 0, 0, 1]):
+def modify_prediction_and_get_box(translation=(0, 0, 0), size=(1, 1, 1), rotation=(0, 0, 0, 1)):
     ground_truth_box = Box3D(
         sample_token="a3b278456a7ee38322388eda31378d0c91a48645fba18b8",
         translation=[0, 0, 0],
@@ -368,43 +317,43 @@ def modify_prediction_and_get_box(translation=[0, 0, 0], size=[1, 1, 1], rotatio
 
 def test_translation_change_x():
     """
-        Move the center_x of prediction and test for iou
+    Move the center_x of prediction and test for iou
     """
     ground_truth_box, prediction_box = modify_prediction_and_get_box(translation=[0.5, 0, 0])
 
-    assert np.isclose(ground_truth_box.get_iou(prediction_box), 0.3333333, 1e-7)
+    assert np.isclose(ground_truth_box.get_iou(prediction_box, 0), 0.3333333, 1e-7)
 
 
 def test_translation_change_y():
     """
-        Move the center_y of prediction and test for iou
+    Move the center_y of prediction and test for iou
     """
     ground_truth_box, prediction_box = modify_prediction_and_get_box(translation=[0, 0.5, 0])
 
-    assert np.isclose(ground_truth_box.get_iou(prediction_box), 0.3333333, 1e-7)
+    assert np.isclose(ground_truth_box.get_iou(prediction_box, 0), 0.3333333, 1e-7)
 
 
 def test_translation_change_z():
     """
-        Move the center_z of prediction and test for iou
+    Move the center_z of prediction and test for iou
     """
     ground_truth_box, prediction_box = modify_prediction_and_get_box(translation=[0, 0, 0.5])
 
-    assert np.isclose(ground_truth_box.get_iou(prediction_box), 0.3333333, 1e-7)
+    assert np.isclose(ground_truth_box.get_iou(prediction_box, 0), 0.3333333, 1e-7)
 
 
 def test_width_change():
     """
-        Change width and test for iou
+    Change width and test for iou
     """
     ground_truth_box, prediction_box = modify_prediction_and_get_box(size=[2, 1, 1])
 
-    assert np.isclose(ground_truth_box.get_iou(prediction_box), 0.5, 1e-7)
+    assert np.isclose(ground_truth_box.get_iou(prediction_box, 0), 0.5, 1e-7)
 
 
 def test_length_change():
     """
-        Change length and test for iou
+    Change length and test for iou
     """
     ground_truth_box, prediction_box = modify_prediction_and_get_box(size=[1, 2, 1])
 
@@ -413,7 +362,7 @@ def test_length_change():
 
 def test_height_change():
     """
-        Change height and test for iou
+    Change height and test for iou
     """
     ground_truth_box, prediction_box = modify_prediction_and_get_box(size=[1, 1, 2])
 
@@ -422,7 +371,7 @@ def test_height_change():
 
 def test_touch_edge_bounding_boxes():
     """
-        test iou for bounding boxes meeting at edge
+    test iou for bounding boxes meeting at edge
     """
     ground_truth_box, prediction_box = modify_prediction_and_get_box(translation=[1, 1, 0])
 
@@ -431,7 +380,7 @@ def test_touch_edge_bounding_boxes():
 
 def test_touch_side_bounding_boxes():
     """
-        test iou for bounding boxes meeting at side
+    test iou for bounding boxes meeting at side
     """
     ground_truth_box, prediction_box = modify_prediction_and_get_box(translation=[0, 1, 0])
 
@@ -440,7 +389,7 @@ def test_touch_side_bounding_boxes():
 
 def test_touch_corner_bounding_boxes():
     """
-        test iou for bounding boxes meeting at corner
+    test iou for bounding boxes meeting at corner
     """
     ground_truth_box, prediction_box = modify_prediction_and_get_box(translation=[1, 1, 1])
 
@@ -449,7 +398,7 @@ def test_touch_corner_bounding_boxes():
 
 def test_area_intersection():
     """
-        Test Area intersection with itself
+    Test Area intersection with itself
     """
     ground_truth_box, prediction_box = get_ground_truth_and_pred_box()
 
@@ -460,7 +409,7 @@ def test_area_intersection():
 
 def test_height_intersection():
     """
-        Test height intersection with itself
+    Test height intersection with itself
     """
     ground_truth_box, prediction_box = get_ground_truth_and_pred_box()
 
@@ -469,7 +418,7 @@ def test_height_intersection():
 
 def test_selfintersection():
     """
-        Test intersection with itself
+    Test intersection with itself
     """
     ground_truth_box, prediction_box = get_ground_truth_and_pred_box()
 
@@ -482,7 +431,7 @@ def test_selfintersection():
 
 def test_selfiou():
     """
-        Test iou with itself
+    Test iou with itself
     """
     ground_truth_box, prediction_box = get_ground_truth_and_pred_box()
 
