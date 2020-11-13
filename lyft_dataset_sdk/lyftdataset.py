@@ -15,6 +15,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import sklearn.metrics
+import yaml
+from addict import Dict as Adict
 from matplotlib.axes import Axes
 from PIL import Image
 from pyquaternion import Quaternion
@@ -24,6 +26,9 @@ from lyft_dataset_sdk.Box import Box
 from lyft_dataset_sdk.data_classes import LidarPointCloud
 from lyft_dataset_sdk.geometry_utils import BoxVisibility, box_in_image, view_points
 from lyft_dataset_sdk.utils.map_mask import MapMask
+
+with open("config.yaml") as f:
+    config = Adict(yaml.load(f, Loader=yaml.SafeLoader))
 
 
 class LyftDataset:
@@ -263,10 +268,10 @@ class LyftDataset:
         """
 
         # Retrieve sensor & pose records
-        sd_record = self.get("sample_data", sample_data_token)
-        cs_record = self.get("calibrated_sensor", sd_record["calibrated_sensor_token"])
-        sensor_record = self.get("sensor", cs_record["sensor_token"])
-        pose_record = self.get("ego_pose", sd_record["ego_pose_token"])
+        sample_data_record = self.get("sample_data", sample_data_token)
+        calibrated_sensor_record = self.get("calibrated_sensor", sample_data_record["calibrated_sensor_token"])
+        sensor_record = self.get("sensor", calibrated_sensor_record["sensor_token"])
+        pose_record = self.get("ego_pose", sample_data_record["ego_pose_token"])
         modality = sensor_record["modality"]
 
         data_path = self.get_sample_data_path(sample_data_token, modality)
@@ -275,8 +280,8 @@ class LyftDataset:
         image_size: Optional[Tuple[int, int]] = None
 
         if modality == "camera":
-            cam_intrinsic = np.array(cs_record["camera_intrinsic"])
-            image_size = (sd_record["width"], sd_record["height"])
+            cam_intrinsic = np.array(calibrated_sensor_record["camera_intrinsic"])
+            image_size = (sample_data_record["width"], sample_data_record["height"])
 
         # Retrieve all sample annotations and map to sensor coordinate system.
         if selected_anntokens is not None:
@@ -301,8 +306,8 @@ class LyftDataset:
                 box.rotate_around_origin(Quaternion(pose_record["rotation"]).inverse)
 
                 #  Move box to sensor coord system
-                box.translate(-np.array(cs_record["translation"]))
-                box.rotate_around_origin(Quaternion(cs_record["rotation"]).inverse)
+                box.translate(-np.array(calibrated_sensor_record["translation"]))
+                box.rotate_around_origin(Quaternion(calibrated_sensor_record["rotation"]).inverse)
 
             if (
                 sensor_record["modality"] == "camera"
@@ -339,8 +344,6 @@ class LyftDataset:
         sample_data, a linear interpolation is applied to estimate the location of the boxes at the time the
         sample_data was captured.
 
-
-
         Args:
             sample_data_token: Unique sample_data identifier.
 
@@ -349,10 +352,10 @@ class LyftDataset:
         """
 
         # Retrieve sensor & pose records
-        sd_record = self.get("sample_data", sample_data_token)
-        curr_sample_record = self.get("sample", sd_record["sample_token"])
+        sample_data_record = self.get("sample_data", sample_data_token)
+        curr_sample_record = self.get("sample", sample_data_record["sample_token"])
 
-        if curr_sample_record["prev"] == "" or sd_record["is_key_frame"]:
+        if curr_sample_record["prev"] == "" or sample_data_record["is_key_frame"]:
             # If no previous annotations available, or if sample_data is keyframe just return the current ones.
             boxes = list(map(self.get_box, curr_sample_record["anns"]))
 
@@ -367,7 +370,7 @@ class LyftDataset:
 
             t0 = prev_sample_record["timestamp"]
             t1 = curr_sample_record["timestamp"]
-            t = sd_record["timestamp"]
+            t = sample_data_record["timestamp"]
 
             # There are rare situations where the timestamps in the DB are off so ensure that t0 < t < t1.
             t = max(t0, min(t1, t))
@@ -593,45 +596,91 @@ class LyftDataset:
                 size=1,
                 color=df_tmp["norm"],
                 opacity=1,
-                colorscale=[(0.0, "rgb(179,205,227)"), (1, "rgb(179,205,227)")],
+                colorscale=[(0.0, config.colors[9]), (1, config.colors[9])],
             ),
             # marker=dict(size=1, color=color, opacity=0.8),
         )
 
-        x_lines = []
-        y_lines = []
-        z_lines = []
+        # x_lines = []
+        # y_lines = []
+        # z_lines = []
 
-        def f_lines_add_nones():
-            x_lines.append(None)
-            y_lines.append(None)
-            z_lines.append(None)
+        # def f_lines_add_nones():
+        #     x_lines.append(None)
+        #     y_lines.append(None)
+        #     z_lines.append(None)
 
         ixs_box_0 = [0, 1, 2, 3, 0]
         ixs_box_1 = [4, 5, 6, 7, 4]
 
+        boxes_dict: Dict = {}
+
+        for class_name in config.class_names:
+            boxes_dict[class_name] = {"x_lines": [], "y_lines": [], "z_lines": []}
+
         for box in boxes:
             points = view_points(box.corners(), view=np.eye(3), normalize=False)
-            x_lines.extend(points[0, ixs_box_0])
-            y_lines.extend(points[1, ixs_box_0])
-            z_lines.extend(points[2, ixs_box_0])
-            f_lines_add_nones()
-            x_lines.extend(points[0, ixs_box_1])
-            y_lines.extend(points[1, ixs_box_1])
-            z_lines.extend(points[2, ixs_box_1])
-            f_lines_add_nones()
-            for i in range(4):
-                x_lines.extend(points[0, [ixs_box_0[i], ixs_box_1[i]]])
-                y_lines.extend(points[1, [ixs_box_0[i], ixs_box_1[i]]])
-                z_lines.extend(points[2, [ixs_box_0[i], ixs_box_1[i]]])
-                f_lines_add_nones()
 
-        lines = go.Scatter3d(
-            x=x_lines, y=y_lines, z=z_lines, mode="lines", name="lines", marker={"color": [179, 205, 227]}
-        )
+            box_name = box.name
+
+            boxes_dict[box_name]["x_lines"].extend(points[0, ixs_box_0])
+            boxes_dict[box_name]["y_lines"].extend(points[1, ixs_box_0])
+            boxes_dict[box_name]["z_lines"].extend(points[2, ixs_box_0])
+
+            boxes_dict[box_name]["x_lines"].append(None)
+            boxes_dict[box_name]["y_lines"].append(None)
+            boxes_dict[box_name]["z_lines"].append(None)
+
+            boxes_dict[box_name]["x_lines"].extend(points[0, ixs_box_1])
+            boxes_dict[box_name]["y_lines"].extend(points[1, ixs_box_1])
+            boxes_dict[box_name]["z_lines"].extend(points[2, ixs_box_1])
+
+            boxes_dict[box_name]["x_lines"].append(None)
+            boxes_dict[box_name]["y_lines"].append(None)
+            boxes_dict[box_name]["z_lines"].append(None)
+
+            # x_lines.extend(points[0, ixs_box_0])
+            # y_lines.extend(points[1, ixs_box_0])
+            # z_lines.extend(points[2, ixs_box_0])
+            # f_lines_add_nones()
+            # x_lines.extend(points[0, ixs_box_1])
+            # y_lines.extend(points[1, ixs_box_1])
+            # z_lines.extend(points[2, ixs_box_1])
+            # f_lines_add_nones()
+
+            for i in range(4):
+                boxes_dict[box_name]["x_lines"].extend(points[0, [ixs_box_0[i], ixs_box_1[i]]])
+                boxes_dict[box_name]["y_lines"].extend(points[1, [ixs_box_0[i], ixs_box_1[i]]])
+                boxes_dict[box_name]["z_lines"].extend(points[2, [ixs_box_0[i], ixs_box_1[i]]])
+
+                boxes_dict[box_name]["x_lines"].append(None)
+                boxes_dict[box_name]["y_lines"].append(None)
+                boxes_dict[box_name]["z_lines"].append(None)
+
+                # x_lines.extend(points[0, [ixs_box_0[i], ixs_box_1[i]]])
+                # y_lines.extend(points[1, [ixs_box_0[i], ixs_box_1[i]]])
+                # z_lines.extend(points[2, [ixs_box_0[i], ixs_box_1[i]]])
+                # f_lines_add_nones()
+
+        temp = [scatter]
+
+        for class_name in boxes_dict:
+            if len(boxes_dict[class_name]["x_lines"]) == 0:
+                continue
+
+            lines = go.Scatter3d(
+                x=boxes_dict[class_name]["x_lines"],
+                y=boxes_dict[class_name]["y_lines"],
+                z=boxes_dict[class_name]["z_lines"],
+                mode="lines",
+                name="lines",
+                marker={"color": self.explorer.get_color(class_name)},
+            )
+
+            temp += [lines]
         # lines = px.scatter_3d(x=x_lines, y=y_lines, z=z_lines, mode="lines", name="lines")
 
-        fig = go.Figure(data=[scatter, lines])
+        fig = go.Figure(data=temp)
         fig.update_layout(scene_aspectmode="data")
         fig.update_layout(showlegend=False)
         fig.show()
@@ -655,24 +704,24 @@ class LyftDatasetExplorer:
         Returns:
 
         """
-        result = (242, 242, 242)
+        result = config.colors[0]
 
-        if category_name == "car":
-            result = (251, 180, 174)
-        elif category_name == "other_vehicle":
-            result = (179, 205, 227)
-        elif category_name == "pedestrian":
-            result = (204, 235, 197)
-        elif category_name == "bicycle":
-            result = (222, 203, 228)
-        elif category_name == "truck":
-            result = (254, 217, 166)
-        elif category_name == "bus":
-            result = (255, 255, 204)
-        elif category_name == "motorcycle":
-            result = (229, 216, 189)
-        elif category_name == "emergency_vehicle":
-            result = (253, 218, 236)
+        if category_name == config.class_names[1]:
+            result = config.colors[1]
+        elif category_name == config.class_names[2]:
+            result = config.colors[2]
+        elif category_name == config.class_names[3]:
+            result = config.colors[3]
+        elif category_name == config.class_names[4]:
+            result = config.colors[4]
+        elif category_name == config.class_names[5]:
+            result = config.colors[5]
+        elif category_name == config.class_names[6]:
+            result = config.colors[6]
+        elif category_name == config.class_names[7]:
+            result = config.colors[7]
+        elif category_name == config.class_names[8]:
+            result = config.colors[8]
 
         return result
 
@@ -1094,10 +1143,7 @@ class LyftDatasetExplorer:
 
             data = Image.open(data_path)
 
-            # # Init axes.
-
-            # _, ax = plt.subplots(1, 1, figsize=(9, 16))
-            # _, ax = plt.subplots(1, 1, figsize=(9, 6))
+            # Init axes.
             _, ax = plt.subplots(1, 1)
 
             # Show image.
