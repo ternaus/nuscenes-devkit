@@ -5,12 +5,12 @@
 
 import os
 import unittest
+from pathlib import Path
 
 import cv2
 import numpy as np
 
 from lyft_dataset_sdk.utils.map_mask import MapMask
-from pathlib import Path
 
 
 class TestLoad(unittest.TestCase):

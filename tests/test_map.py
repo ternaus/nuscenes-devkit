@@ -21,7 +21,7 @@ from lyft_dataset_sdk.eval.detection.mAP_evaluation import (
 )
 def test_fround_area(rotation):
     translation = [0, 0, 1.5]
-    size = 2, 4, translation[2] * 2  # width, length, height
+    size = [2, 4, translation[2] * 2]  # width, length, height
 
     sample_token = ""
     name = "car"
@@ -29,28 +29,6 @@ def test_fround_area(rotation):
     b = Box3D(translation=translation, rotation=rotation, size=size, sample_token=sample_token, name=name)
 
     assert b.volume == np.prod(size)
-
-
-@pytest.mark.parametrize(
-    "rotation",
-    [
-        [1, 0, 0, 0],  # angle = 0
-        [0, 0, 0, 1],  # 180 rotation around z axis
-        [math.sqrt(0.5), 0, 0, math.sqrt(0.5)],  # 90 rotation around z axis
-    ],
-)
-def test_ground_area(rotation):
-    translation = [0, 0, 1.5]
-    size = 2, 4, translation[2] * 2  # width, length, height
-
-    sample_token = ""
-    name = "car"
-
-    b = Box3D(translation=translation, rotation=rotation, size=size, sample_token=sample_token, name=name)
-
-    assert b.volume == np.prod(size)
-
-    assert np.isclose(b.ground_bbox_coords.area, b.length * b.width, rtol=1e-05, atol=1e-08, equal_nan=False)
 
 
 @pytest.mark.parametrize(
@@ -93,7 +71,6 @@ def test_self():
     )
 
     assert original_box.volume == np.prod([2.064, 5.488, 2.053])
-    assert np.isclose(original_box.ground_bbox_coords.area, 2.064 * 5.488)
 
     assert np.isclose(original_box.get_area_intersection(original_box), 2.064 * 5.488)
     assert np.isclose(original_box.get_height_intersection(original_box), 2.053)
@@ -102,7 +79,7 @@ def test_self():
 
 
 @pytest.mark.parametrize(
-    ["original_box", "target_box", "intersection", "height_intersection", "area_intersection"],
+    ["original_box", "target_box", "height_intersection", "area_intersection"],
     [
         (
             Box3D(
@@ -119,7 +96,6 @@ def test_self():
                 rotation=[0.2654919368, 0, 0, 0.9641130802],
                 name="car",
             ),
-            23.254807296,
             2.053,
             2.064 * 5.488,
         )
@@ -396,17 +372,6 @@ def test_touch_corner_bounding_boxes():
     assert np.isclose(ground_truth_box.get_iou(prediction_box), 0, 1e-7)
 
 
-def test_area_intersection():
-    """
-    Test Area intersection with itself
-    """
-    ground_truth_box, prediction_box = get_ground_truth_and_pred_box()
-
-    ground_truth_base = ground_truth_box.get_ground_bbox_coords()
-
-    assert np.isclose(ground_truth_box.get_area_intersection(prediction_box), ground_truth_base.area, 1e-7)
-
-
 def test_height_intersection():
     """
     Test height intersection with itself
@@ -414,19 +379,6 @@ def test_height_intersection():
     ground_truth_box, prediction_box = get_ground_truth_and_pred_box()
 
     assert np.isclose(ground_truth_box.get_height_intersection(prediction_box), ground_truth_box.size[2], 1e-7)
-
-
-def test_selfintersection():
-    """
-    Test intersection with itself
-    """
-    ground_truth_box, prediction_box = get_ground_truth_and_pred_box()
-
-    ground_truth_base = ground_truth_box.get_ground_bbox_coords()
-
-    area_calculated = ground_truth_base.area * ground_truth_box.size[2]
-
-    assert np.isclose(ground_truth_box.get_intersection(prediction_box), area_calculated, 1e-7)
 
 
 def test_selfiou():

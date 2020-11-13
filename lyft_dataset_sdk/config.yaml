@@ -1,12 +1,26 @@
 ---
 
+color_palette_name: muted # sns.color_palette("muted")
+
+colors:
+ - [ 72, 120, 208] # blue
+ - [238, 133,  74] # orange
+ - [106, 204, 100] # green
+ - [214,  95,  95] # red
+ - [149, 108, 180] # purple
+ - [140,  97,  60] # brown
+ - [220, 126, 192] # pink
+ - [121, 121, 121] # gray
+ - [213, 187, 103] # yellow
+ - [130, 198, 226] # light blue
+
 class_names:
  - animal
- - bicycle
- - bus
  - car
- - emergency_vehicle
- - motorcycle
  - other_vehicle
  - pedestrian
+ - bicycle
  - truck
+ - bus
+ - motorcycle
+ - emergency_vehicle
