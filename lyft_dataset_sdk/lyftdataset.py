@@ -27,7 +27,7 @@ from lyft_dataset_sdk.data_classes import LidarPointCloud
 from lyft_dataset_sdk.geometry_utils import BoxVisibility, box_in_image, view_points
 from lyft_dataset_sdk.utils.map_mask import MapMask
 
-with open("config.yaml") as f:
+with open(Path(__file__).parent / "config.yaml") as f:
     config = Adict(yaml.load(f, Loader=yaml.SafeLoader))
 
 
@@ -596,19 +596,12 @@ class LyftDataset:
                 size=1,
                 color=df_tmp["norm"],
                 opacity=1,
-                colorscale=[(0.0, config.colors[9]), (1, config.colors[9])],
+                colorscale=[
+                    (0.0, f"rgb({config.colors[9][0]}, {config.colors[9][1]}, {config.colors[9][2]})"),
+                    (1, f"rgb({config.colors[9][0]}, {config.colors[9][1]}, {config.colors[9][2]})"),
+                ],
             ),
-            # marker=dict(size=1, color=color, opacity=0.8),
         )
-
-        # x_lines = []
-        # y_lines = []
-        # z_lines = []
-
-        # def f_lines_add_nones():
-        #     x_lines.append(None)
-        #     y_lines.append(None)
-        #     z_lines.append(None)
 
         ixs_box_0 = [0, 1, 2, 3, 0]
         ixs_box_1 = [4, 5, 6, 7, 4]
@@ -1113,14 +1106,8 @@ class LyftDatasetExplorer:
             points = view_points(
                 pointcloud.points[:3, :], np.dot(vehicle_flat_from_vehicle, vehicle_from_sensor), normalize=False
             )
-            dists = np.sqrt(np.sum(pointcloud.points[:2, :] ** 2, axis=0))
-            colors = np.minimum(1, dists / axes_limit / np.sqrt(2))
-            # ax.scatter(points[0, :], points[1, :], c=colors, s=0.2)
-            print(colors.shape)
-            print(np.array([222, 203, 228] * len(colors)))
-            ax.scatter(points[0, :], points[1, :], color=np.array([179, 205, 227]) / 255, s=0.2)
-            #
-            # plt.scatter(points[0, :], points[1, :], c=colors, s=0.2)
+
+            ax.scatter(points[0, :], points[1, :], color=np.array(config.colors[9]) / 255, s=0.2)
 
             # Show ego vehicle.
             ax.plot(0, 0, "x", color="red")

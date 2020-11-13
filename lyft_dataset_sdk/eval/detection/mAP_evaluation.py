@@ -352,9 +352,9 @@ def recall_precision(
     assert np.all(recalls >= 0) & np.all(recalls <= 1)
 
     # avoid divide by zero in case the first detection matches a difficult ground truth
-    precisions = tp / np.maximum(tp + fp, np.finfo(np.float64).eps)
+    precisions = tp / np.maximum(tp + fp, np.finfo(np.float32).eps)
 
-    assert np.all(precisions <= 0) & np.all(precisions <= 1)
+    assert np.all(precisions >= 0) & np.all(precisions <= 1)
 
     ap = get_ap(recalls, precisions)
 
