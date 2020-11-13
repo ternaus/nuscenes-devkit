@@ -14,8 +14,6 @@ from pyquaternion import Quaternion
 
 from lyft_dataset_sdk.geometry_utils import transform_matrix, view_points
 
-# from lyft_dataset_sdk.lyftdataset import LyftDataset
-
 
 class PointCloud(ABC):
     """
