@@ -13,7 +13,8 @@ from matplotlib.axes import Axes
 from pyquaternion import Quaternion
 
 from lyft_dataset_sdk.geometry_utils import transform_matrix, view_points
-from lyft_dataset_sdk.lyftdataset import LyftDataset
+
+# from lyft_dataset_sdk.lyftdataset import LyftDataset
 
 
 class PointCloud(ABC):
@@ -55,9 +56,9 @@ class PointCloud(ABC):
         pass
 
     @classmethod
-    def from_file_multisweep(
+    def from_file_multisweep(  # type: ignore
         cls,
-        lyftd: LyftDataset,
+        lyftd,
         sample_rec: Dict,
         chan: str,
         ref_chan: str,
